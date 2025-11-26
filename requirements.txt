@@ -1,0 +1,7 @@
+torch
+torchvision
+timm
+transformers
+gradio==4.44.0
+pillow
+starlette>=0.40.0,<1.0

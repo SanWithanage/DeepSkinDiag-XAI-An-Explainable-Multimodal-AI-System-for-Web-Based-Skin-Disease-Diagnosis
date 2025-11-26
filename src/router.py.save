@@ -1,0 +1,358 @@
+
+# src/router.py
+# Step 7: Router (Binary → Multiclass(+T) → optional Text → Fusion → JSON)
+# - Binary stage is OPTIONAL: if unavailable, continue to Stage B and note it in output.
+
+import argparse, json, os, sys, importlib, inspect
+from utils.safety import (
+    _validate_image_or_exit,
+    _annotate_tiers_in_place,
+    _maybe_add_risky_advisory,
+)
+
+from typing import List, Dict, Any, Optional, Tuple, Callable
+import numpy as np
+from utils.safety import (
+    _validate_image_or_exit,
+    _annotate_tiers_in_place,
+    _maybe_add_risky_advisory,
+)
+
+# -----------------------
+# Small helpers
+# -----------------------
+
+def load_labels(labels_txt: str, fallback_n: int = 26) -> List[str]:
+    if labels_txt and os.path.exists(labels_txt):
+        labs = [ln.strip() for ln in open(labels_txt, "r", encoding="utf-8") if ln.strip()]
+        if labs:
+            return labs
+    return [f"class_{i}" for i in range(fallback_n)]
+
+def softmax(x: np.ndarray) -> np.ndarray:
+    if x.ndim == 1:
+        z = x - np.max(x)
+        e = np.exp(z)
+        return e / (np.sum(e) + 1e-12)
+    z = x - np.max(x, axis=1, keepdims=True)
+    e = np.exp(z)
+    return e / (np.sum(e, axis=1, keepdims=True) + 1e-12)
+
+def apply_temperature_to_logits(logits: np.ndarray, T: float) -> np.ndarray:
+    return softmax(logits / float(T))
+
+def topk_from_probs(p: np.ndarray, labels: List[str], k: int = 3):
+    idx = np.argsort(-p)[:k]
+    return [{"label": labels[i], "confidence": float(p[i])} for i in idx]
+
+def confidence_tier(pmax: float) -> str:
+    if pmax >= 0.70: return "High"
+    if pmax >= 0.50: return "Medium"
+    return "Low"
+
+def fuse_probs(p_img: Optional[np.ndarray], p_txt: Optional[np.ndarray], alpha: float) -> np.ndarray:
+    if p_img is None and p_txt is None:
+        raise ValueError("Both image and text probabilities are None.")
+    if p_img is None: return p_txt
+    if p_txt is None: return p_img
+    v = alpha * p_img + (1.0 - alpha) * p_txt
+    return v / (float(np.sum(v)) + 1e-12)
+
+def load_temperature(temp_json_path: str) -> float:
+    if temp_json_path and os.path.exists(temp_json_path):
+        try:
+            obj = json.load(open(temp_json_path, "r"))
+            return float(obj.get("T", 1.0))
+        except Exception:
+            return 1.0
+    return 1.0
+
+def contains_high_risk(labels3: List[str], risk_keywords: List[str]) -> bool:
+    l3 = [s.lower() for s in labels3]
+    for kw in risk_keywords:
+        kw = kw.lower().strip()
+        if not kw: 
+            continue
+        for s in l3:
+            if kw in s:
+                return True
+    return False
+
+def _try_import(paths: List[Tuple[str, str]]) -> Optional[Callable]:
+    for mod, attr in paths:
+        try:
+            m = __import__(mod, fromlist=[attr])
+            fn = getattr(m, attr, None)
+            if callable(fn):
+                return fn
+        except Exception:
+            continue
+    return None
+
+# -----------------------
+# Inference hooks (robust)
+# -----------------------
+
+def infer_binary_probs(image_path: str, ckpt: str, device: str) -> Dict[str, float]:
+    """
+    Tries multiple known wrappers/signatures; returns {"Healthy": pH, "Unhealthy": pU}.
+    If nothing works, raises RuntimeError (router will catch and continue to Stage B).
+    """
+    if not (image_path and os.path.exists(image_path) and ckpt and os.path.exists(ckpt)):
+        raise RuntimeError("Binary: missing image or checkpoint")
+
+    # Prefer a project wrapper if present
+    cand = _try_import([
+        ("src.stages.binary.infer_wrap", "predict_probs"),
+        ("src.stages.binary.evaluate", "predict_probs"),  # if you exposed it there
+    ])
+    if cand is None:
+        raise RuntimeError("Binary: no predict function found (expected infer_wrap.predict_probs or similar)")
+
+    try:
+        out = cand(image_path, ckpt, device)
+    except TypeError:
+        out = cand(ckpt, image_path, device)
+
+    if isinstance(out, dict):
+        pH = float(out.get("Healthy", 0.0))
+        pU = float(out.get("Unhealthy", 0.0))
+    else:
+        arr = np.asarray(out, dtype="float64").ravel()
+        if arr.size != 2:
+            raise RuntimeError("Binary: wrapper returned unexpected shape")
+        arr = arr / (arr.sum() + 1e-12)
+        pH, pU = float(arr[0]), float(arr[1])
+
+    s = pH + pU
+    if s <= 0:
+        pH, pU = 0.5, 0.5
+    else:
+        pH, pU = pH/s, pU/s
+    return {"Healthy": pH, "Unhealthy": pU}
+
+def infer_multiclass_logits(image_path: str, ckpt: str, device: str, expect_C: int) -> np.ndarray:
+    if not (image_path and os.path.exists(image_path) and ckpt and os.path.exists(ckpt)):
+        raise RuntimeError("Multiclass: missing image or checkpoint")
+
+    cand_logits = _try_import([
+        ("src.stages.multiclass.infer_wrap", "predict_logits"),
+        ("src.stages.multiclass.infer", "predict_logits"),
+    ])
+    if cand_logits:
+        try:
+            logits = cand_logits(ckpt, image_path, device)
+        except TypeError:
+            logits = cand_logits(image_path, ckpt, device)
+        logits = np.asarray(logits, dtype="float64").ravel()
+        if logits.size != expect_C:
+            raise RuntimeError(f"Multiclass: logits size {logits.size} != {expect_C}")
+        return logits
+
+    cand_probs = _try_import([
+        ("src.stages.multiclass.infer_wrap", "predict_probs"),
+        ("src.stages.multiclass.infer", "predict_probs"),
+    ])
+    if cand_probs is None:
+        raise RuntimeError("Multiclass: no predict function found (infer_wrap.predict_* missing)")
+
+    try:
+        probs = cand_probs(ckpt, image_path, device)
+    except TypeError:
+        probs = cand_probs(image_path, ckpt, device)
+
+    probs = np.asarray(probs, dtype="float64").ravel()
+    if probs.size != expect_C:
+        raise RuntimeError(f"Multiclass: probs size {probs.size} != {expect_C}")
+    probs = probs / (probs.sum() + 1e-12)
+    eps = 1e-12
+    return np.log(np.clip(probs, eps, 1.0))
+
+def infer_text_probs(symptom_text: Optional[str], text_ckpt: Optional[str], max_len: int, expect_C: int) -> Optional[np.ndarray]:
+    if not symptom_text or not text_ckpt:
+        return None
+    if not os.path.isdir(text_ckpt):
+        raise RuntimeError(
+            f"Text: '{text_ckpt}' is not a local directory. "
+            "Point --text_ckpt to a folder saved via save_pretrained()."
+        )
+    try:
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        import torch
+        tokenizer = AutoTokenizer.from_pretrained(text_ckpt, local_files_only=True)
+        model = AutoModelForSequenceClassification.from_pretrained(text_ckpt, local_files_only=True)
+        model.eval()
+        with torch.no_grad():
+            enc = tokenizer(symptom_text, truncation=True, padding=True, max_length=max_len, return_tensors="pt")
+            logits = model(**enc).logits.squeeze(0).cpu().numpy().astype("float64")  # (C,)
+        if logits.size != expect_C:
+            probs = softmax(logits)
+            v = np.zeros((expect_C,), dtype="float64")
+            m = min(expect_C, probs.size)
+            v[:m] = probs[:m]
+            return v / (v.sum() + 1e-12)
+        return softmax(logits)
+    except Exception as e:
+        raise RuntimeError(f"Text: failed to load/run local HF model: {e}")
+
+# -----------------------
+# CLI and main
+# -----------------------
+
+def parse_args():
+    ap = argparse.ArgumentParser(description="Router: Binary → Multiclass(+T) → optional Text → Fusion → JSON")
+    ap.add_argument("--image", required=True, help="Path to image")
+    ap.add_argument("--symptom_text", default=None, help="Optional symptom text")
+    ap.add_argument("--binary_ckpt", required=False, help="Binary model checkpoint (optional; router can proceed without it)")
+    ap.add_argument("--multiclass_ckpt", required=True, help="Multiclass model checkpoint")
+    ap.add_argument("--multiclass_temp", required=True, help="JSON with {'T': float} for image temperature scaling")
+    ap.add_argument("--text_ckpt", default=None, help="LOCAL HF folder for symptom text model (saved via save_pretrained)")
+    ap.add_argument("--labels_txt", required=True, help="Labels file (one per line, C=26)")
+    ap.add_argument("--device", default="cpu", choices=["cpu","mps","cuda"])
+    ap.add_argument("--alpha", type=float, default=0.5, help="Fusion weight for IMAGE stream (0..1)")
+    ap.add_argument("--healthy_hi", type=float, default=0.95)
+    ap.add_argument("--healthy_border_low", type=float, default=0.85)
+    ap.add_argument("--risk_keywords_csv", default="Melanoma,Cancer,Carcinoma,Cellulitis,Shingles,Stevens_Johnson,Bullous")
+    ap.add_argument("--out", default="", help="Optional path to write JSON output")
+    return ap.parse_args()
+
+def main():
+    args = parse_args()
+    labels = load_labels(args.labels_txt, fallback_n=26)
+    C = len(labels)
+
+    # ----------------
+    # Stage A: Binary (optional)
+    # ----------------
+    bin_err = None
+    bin_probs = None
+    if args.binary_ckpt:
+        try:
+            bin_probs = infer_binary_probs(args.image, args.binary_ckpt, args.device)
+        except Exception as e:
+            bin_err = str(e)
+
+    # Decide path
+    early_exit = False
+    borderline = False
+    p_healthy = None
+    p_unhealthy = None
+
+    if bin_probs is not None:
+        p_healthy = float(bin_probs.get("Healthy", 0.0))
+        p_unhealthy = float(bin_probs.get("Unhealthy", 0.0))
+        s = p_healthy + p_unhealthy
+        if s <= 0: p_healthy, p_unhealthy = 0.5, 0.5
+        else:      p_healthy, p_unhealthy = p_healthy/s, p_unhealthy/s
+
+        if p_healthy >= args.healthy_hi:
+            # Early exit
+            out = {
+                "image": args.image,
+                "stage": "healthy_early_exit",
+                "decision": "Likely Healthy",
+                "thresholds_used": {
+                    "healthy_hi": args.healthy_hi,
+                    "healthy_border_low": args.healthy_border_low
+                },
+                "binary": {
+                    "Healthy": p_healthy,
+                    "Unhealthy": p_unhealthy,
+                    "threshold_used": args.healthy_hi
+                },
+                "advisories": []
+            }
+            _emit(out, args.out)
+            return
+
+        borderline = (args.healthy_border_low <= p_healthy < args.healthy_hi)
+        stage_note = "healthy_borderline_then_multiclass" if borderline else "unhealthy_then_multiclass"
+    else:
+        # Binary unavailable -> proceed
+        stage_note = "binary_unavailable_then_multiclass"
+
+    # -------------------
+    # Stage B: Multiclass
+    # -------------------
+    T = load_temperature(args.multiclass_temp)
+
+    try:
+        logits_img = infer_multiclass_logits(args.image, args.multiclass_ckpt, args.device, expect_C=C)
+        probs_img = apply_temperature_to_logits(np.asarray(logits_img, dtype="float64").ravel(), T)
+    except Exception as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        sys.exit(2)
+
+    probs_txt = None
+    if args.symptom_text and args.text_ckpt:
+        try:
+            probs_txt = infer_text_probs(args.symptom_text, args.text_ckpt, max_len=192, expect_C=C)
+        except Exception as e:
+            print(f"[WARN] {e}", file=sys.stderr)
+            probs_txt = None
+
+    alpha = float(args.alpha)
+    probs_fused = fuse_probs(probs_img, probs_txt, alpha=alpha)
+
+    top3_image = topk_from_probs(probs_img, labels, k=3)
+    top3_text  = topk_from_probs(probs_txt, labels, k=3) if probs_txt is not None else None
+    top3_fused = topk_from_probs(probs_fused, labels, k=3)
+
+    pmax = float(np.max(probs_fused if probs_txt is not None else probs_img))
+    tier = confidence_tier(pmax)
+
+    risk_keywords = [s for s in args.risk_keywords_csv.split(",") if s.strip()]
+    top3_labels = [d["label"] for d in top3_fused]
+    advisories = []
+    if contains_high_risk(top3_labels, risk_keywords):
+        advisories.append(
+            "⚠️ A potentially high-risk condition appears in the top-3. "
+            "Please seek medical attention promptly. This tool is not a diagnosis."
+        )
+
+    out: Dict[str, Any] = {
+        "image": args.image,
+        "stage": stage_note,
+        "thresholds_used": {
+            "healthy_hi": args.healthy_hi,
+            "healthy_border_low": args.healthy_border_low
+        },
+        "binary": {
+            "Healthy": p_healthy if p_healthy is not None else None,
+            "Unhealthy": p_unhealthy if p_unhealthy is not None else None,
+            "threshold_used": args.healthy_hi,
+            "error": bin_err
+        },
+        "multiclass": {
+            "temperature_T": float(T),
+            "alpha": alpha,
+            "topk_image": top3_image,
+            "topk_text": top3_text,
+            "topk_fused": top3_fused,
+            "confidence_tier": tier
+        },
+        "advisories": advisories
+    }
+
+    if probs_txt is not None or probs_fused is not None or probs_img is not None:
+        out["probs"] = {}
+        out["probs"]["image_calibrated"] = [float(x) for x in probs_img]
+        if probs_txt is not None:
+            out["probs"]["text"] = [float(x) for x in probs_txt]
+        out["probs"]["fused"] = [float(x) for x in probs_fused]
+
+    _emit(out, args.out)
+
+def _emit(obj: Dict[str, Any], out_path: str):
+    js = json.dumps(obj, indent=2)
+    if out_path:
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        with open(out_path, "w") as f:
+            f.write(js)
+        print(js)
+        print(f"\n[OK] Wrote {out_path}")
+    else:
+        print(js)
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,43 @@
+{
+  "timestamp": "20251014_170057",
+  "image": "uploaded_20251014_170057.png",
+  "final_label": "Healthy",
+  "binary_probs": {
+    "Unhealthy": 0.0017821190413087606,
+    "Healthy": 0.9982178807258606
+  },
+  "image_top3": [
+    {
+      "label": "HFMD",
+      "prob": 0.3799079954624176
+    },
+    {
+      "label": "Lichen",
+      "prob": 0.14807692170143127
+    },
+    {
+      "label": "Vitiligo",
+      "prob": 0.1042855978012085
+    }
+  ],
+  "fused_top3": [
+    {
+      "label": "HFMD",
+      "prob": 0.3799079954624176
+    },
+    {
+      "label": "Lichen",
+      "prob": 0.14807692170143127
+    },
+    {
+      "label": "Vitiligo",
+      "prob": 0.1042855978012085
+    }
+  ],
+  "params": {
+    "HEALTHY_MIN_CONFIDENCE": 0.55,
+    "PRIORITIZE_BINARY_HEALTHY": true,
+    "SWAP_BINARY_ORDER": true,
+    "TEMPERATURE": 1.0
+  }
+}

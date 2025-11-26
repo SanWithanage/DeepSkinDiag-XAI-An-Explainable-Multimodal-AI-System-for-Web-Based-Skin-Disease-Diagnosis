@@ -1,0 +1,12 @@
+section,label,prob
+final,Healthy,
+bin_top,Healthy,0.998218
+bin_top,Unhealthy,0.001782
+mc_top,HFMD,0.379908
+mc_top,Lichen,0.148077
+mc_top,Vitiligo,0.104286
+fused_top,HFMD,0.379908
+fused_top,Lichen,0.148077
+fused_top,Vitiligo,0.104286
+binary_probs,Unhealthy,0.001782
+binary_probs,Healthy,0.998218

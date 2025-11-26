@@ -1,0 +1,9 @@
+Cellulitis
+Folliculitis
+Impetigo
+Keloid
+Melasma
+Molluscum
+Pityriasis_Rosea
+Scabies
+Urticaria
