@@ -7,6 +7,10 @@ To promote transparency and trust, the platform incorporates Explainable AI (XAI
 
 The application supports both English and Sinhala, making AI-powered skin health guidance more accessible to a wider audience.
 
+
+## 📄 Research Report
+
+[View Full Project Report](docs/DeepSkinDiag-XAI_Thesis.pdf))
 ---
 
 ## Features
