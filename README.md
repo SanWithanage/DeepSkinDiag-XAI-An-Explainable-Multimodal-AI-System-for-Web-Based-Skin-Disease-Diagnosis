@@ -60,12 +60,12 @@ Add a representative thermal skin image from the dataset.
 ### Mobile Application
 
 | HomReal time test by camara
-  <img width="780" height="3156" alt="IMG_3587" src="https://github.com/user-attachments/assets/176eecb8-ddae-412b-91c4-aa28af123867" />
+<img width="780" height="3156" alt="IMG_3587" src="https://github.com/user-attachments/assets/176eecb8-ddae-412b-91c4-aa28af123867" />
 
 
                            |
 | Test by uploading photo
-  <img width="780" height="5796" alt="IMG_3591" src="https://github.com/user-attachments/assets/2e5f5f1c-b504-45e3-9b8c-b0bca10ca7a1" />
+<img width="780" height="5796" alt="IMG_3591" src="https://github.com/user-attachments/assets/2e5f5f1c-b504-45e3-9b8c-b0bca10ca7a1" />
 
 
 ### Desktop Application
@@ -122,6 +122,19 @@ Benefits include:
 * Pandas
 * OpenCV
 * Scikit-learn
+
+## Dataset
+
+This project utilizes multiple publicly available dermatology datasets:
+
+- HAM10000
+- ISIC Archive
+- DermNet
+
+Links:
+- https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000
+- https://challenge.isic-archive.com/
+- https://dermnetnz.org/
 
 ---
 
