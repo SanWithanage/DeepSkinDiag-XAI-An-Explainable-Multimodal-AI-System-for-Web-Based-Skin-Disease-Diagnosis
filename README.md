@@ -52,10 +52,21 @@ Predictions
 
 Add a representative thermal skin image from the dataset.
 
-```markdown
-!<img width="616" height="584" alt="Screenshot 2025-10-21 at 10 12 12" src="https://github.com/user-attachments/assets/c75e488f-2533-4835-a4cf-9ba82eb90109" />
-(images/dataset-sample.jpg)
-```
+<img width="616" height="584" alt="Screenshot 2025-10-21 at 10 12 12" src="https://github.com/user-attachments/assets/cd8223d5-279b-492c-b0c8-9092d64a930e" />
+
+## Dataset
+
+This project utilizes multiple publicly available dermatology datasets:
+
+- HAM10000
+- ISIC Archive
+- DermNet
+
+Links:
+- https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000
+- https://challenge.isic-archive.com/
+- https://dermnetnz.org/
+
 
 ### Mobile Application
 
@@ -123,18 +134,6 @@ Benefits include:
 * OpenCV
 * Scikit-learn
 
-## Dataset
-
-This project utilizes multiple publicly available dermatology datasets:
-
-- HAM10000
-- ISIC Archive
-- DermNet
-
-Links:
-- https://www.kaggle.com/datasets/kmader/skin-cancer-mnist-ham10000
-- https://challenge.isic-archive.com/
-- https://dermnetnz.org/
 
 ---
 
